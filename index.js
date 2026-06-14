@@ -2,6 +2,10 @@ import * as THREE from "three";
 import getLayer from "./getLayer.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+// added imports for postprocessing bloom
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 
 
 const w = window.innerWidth;
@@ -9,19 +13,23 @@ const h = window.innerHeight;
 const scene = new THREE.Scene();
 
 const camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
-camera.position.z = 3;;
+camera.position.z = 5;
 // make canvas transparent
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(w, h);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 0.7;
 // ensure clear color is fully transparent
 renderer.setClearColor(0x000000, 0);
 document.body.appendChild(renderer.domElement);
 // ensure page background is transparent
 document.documentElement.style.background = 'transparent';
 document.body.style.background = 'transparent';
+
+// enable shadows and use a soft shadow algorithm
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const ctrls = new OrbitControls(camera, renderer.domElement);
 ctrls.enableDamping = true;
@@ -69,8 +77,7 @@ pivot.add(bellPayphone);
 
 // start rotated 270 degrees around Y
 pivot.rotation.y = 3 * Math.PI / 2.2; // 270deg
-pivot.rotation.x = -0.1
-
+pivot.rotation.x = 0.15;
 // bounce setup: 180° total (min = 270° - 180° = 90°, max = 270°)
 const clock = new THREE.Clock();
 const rotationSpeed = 0.3; // radians per second (~0.005 per frame at 60fps)
@@ -110,11 +117,47 @@ const material = new THREE.MeshStandardMaterial({
 const cube = new THREE.Mesh(geometry, material);
 // scene.add(cube);
 
-const hemiLight = new THREE.HemisphereLight(0xffffff, 0x666666, 0.5);
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x666666, 1);
 scene.add(hemiLight);
 // add ambient fill light (no directional light)
-const ambient = new THREE.AmbientLight(0xffffff, 0.5);
-scene.add(ambient);
+const ambient = new THREE.AmbientLight(0xffffff, 1);
+// scene.add(ambient);
+
+// Natural key light that casts shadows
+const keyLight = new THREE.DirectionalLight(0xfff3ea, 1.0); // warm key
+keyLight.position.set(5, 8, 6);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.width = 2048;
+keyLight.shadow.mapSize.height = 2048;
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 30;
+const d = 8;
+keyLight.shadow.camera.left = -d;
+keyLight.shadow.camera.right = d;
+keyLight.shadow.camera.top = d;
+keyLight.shadow.camera.bottom = -d;
+// soften shadow edges (works with PCFSoftShadowMap)
+keyLight.shadow.radius = 6;
+scene.add(keyLight);
+// ensure the light targets the model pivot so shadows are oriented to the object
+keyLight.target = pivot;
+scene.add(keyLight.target);
+
+// subtle fill from opposite side so shadows remain soft and natural
+const fillLight = new THREE.DirectionalLight(0x88aaff, 0.25);
+fillLight.position.set(-4, 3, -3);
+scene.add(fillLight);
+
+// ground / contact shadow receiver positioned just under the model
+// use existing `box` from earlier to find model bottom; fall back to -2
+const groundY = (typeof box !== "undefined" && box.min) ? box.min.y - 0.01 : -2;
+const groundGeo = new THREE.PlaneGeometry(40, 40);
+const groundMat = new THREE.ShadowMaterial({ opacity: 0.4 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY;
+ground.receiveShadow = true;
+scene.add(ground);
 
 // Sprites BG
 // const gradientBackground = getLayer({
@@ -126,6 +169,19 @@ scene.add(ambient);
 //   z: -15.5,
 // });
 // scene.add(gradientBackground);
+
+// Setup postprocessing composer with a slight bloom
+const composer = new EffectComposer(renderer);
+composer.setSize(w, h);
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
+
+// tweak these for a subtle effect
+const bloomStrength = 0.19;
+const bloomRadius = 0.4;
+const bloomThreshold = 0.35;
+const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), bloomStrength, bloomRadius, bloomThreshold);
+composer.addPass(bloomPass);
 
 function animate() {
   requestAnimationFrame(animate);
@@ -146,7 +202,8 @@ function animate() {
 
   // update controls (damping) before render
   ctrls.update();
-  renderer.render(scene, camera);
+  // render using composer to apply bloom
+  composer.render(delta);
 }
 
 animate();
@@ -155,5 +212,7 @@ function handleWindowResize() {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  // keep composer in sync
+  composer.setSize(window.innerWidth, window.innerHeight);
 }
 window.addEventListener('resize', handleWindowResize, false);
